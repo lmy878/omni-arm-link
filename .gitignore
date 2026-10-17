@@ -1,0 +1,8 @@
+build/
+*.o
+*.a
+*.log
+*.jsonl
+config/keys/*.key
+compile_commands.json
+.cache/

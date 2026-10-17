@@ -1,0 +1,16 @@
+[Unit]
+Description=omni-arm-link robot telemetry transmitter
+After=network-online.target wifibroadcast@robot.service
+Wants=network-online.target wifibroadcast@robot.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/oal_robot --config /etc/omni-arm-link/link.conf
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

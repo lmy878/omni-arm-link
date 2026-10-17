@@ -1,0 +1,17 @@
+[Unit]
+Description=omni-arm-link passive monitor and logger
+After=network-online.target wifibroadcast@monitor.service
+Wants=network-online.target wifibroadcast@monitor.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/oal_monitor --config /etc/omni-arm-link/link.conf --log-file /var/log/omni-arm-link/monitor.jsonl
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+LogsDirectory=omni-arm-link
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

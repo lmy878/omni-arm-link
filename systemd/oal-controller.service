@@ -1,0 +1,16 @@
+[Unit]
+Description=omni-arm-link ground controller
+After=network-online.target wifibroadcast@controller.service
+Wants=network-online.target wifibroadcast@controller.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/oal_controller --config /etc/omni-arm-link/link.conf
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
