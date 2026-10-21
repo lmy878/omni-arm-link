@@ -156,16 +156,50 @@ ctest --test-dir build --output-on-failure
 sudo scripts/install_wfbng.sh 8812eu
 ```
 
-### 2. 生成密钥对
+### 2. 生成密钥对（只生成一次）
 
-详见 [通信方案](通信方案.md)。
+> 密钥流程以本节为准；[通信方案](通信方案.md) 只讨论链路与协议，不包含密钥
+> 生成步骤。
+
+WFB-NG 的 `drone.key` 与 `gs.key` 是同一次 `wfb_keygen` 生成的一对密钥：
+`drone.key` 是「无人机私钥 + 地面站公钥」，`gs.key` 是「地面站私钥 + 无人机
+公钥」。两者必须配对使用，**只在一台主机上生成一次**：
 
 ```bash
 scripts/gen_keys.sh config/keys
 ```
 
-将 `drone.key` 复制到机器人端，`gs.key` 复制到遥控器端，并将**两个密钥**都
-复制到被动监听端（它需要解码上下行两个方向）。
+脚本会打印两个文件的 SHA-256 指纹，请记录下来用于后续核对。
+
+然后把**同一对**密钥分发到三端：
+
+| 目标 | 需要安装的文件 |
+|------|----------------|
+| 机器人端 | `drone.key` → `/etc/drone.key` |
+| 遥控器端 | `gs.key` → `/etc/gs.key` |
+| 监听端 | 两个都要 → `/etc/drone.key`、`/etc/gs.key` |
+
+> **不要在三台主机上分别运行 `gen_keys.sh`。** 不带密码时每次都会生成全新的
+> 随机密钥对；分别生成会导致空口加密无法互相解密——`wfb-cli` 上通常表现为
+> 能收到包但 `dec_err` / 解密错误增长，而应用层完全收不到数据。同理，在任意
+> 一台主机上重新生成密钥后，必须把新的 `drone.key` / `gs.key` 重新分发到所有
+> 节点，否则旧节点解不开新包。
+>
+> 如果确实需要在多台主机上各自生成（例如批量部署），每次调用都传入**同一个
+> 密码**：`scripts/gen_keys.sh config/keys 'shared-password'`。`wfb_keygen` 会用
+> 固定 salt 从密码派生出相同的密钥对。
+
+分发后在各主机核对每个已安装文件的指纹，确认与生成主机上记录的一致（机器人端
+核对 `drone.key`，遥控器端核对 `gs.key`，监听端两个都核对）：
+
+```bash
+sha256sum /etc/drone.key    # 机器人端 / 监听端
+sha256sum /etc/gs.key       # 遥控器端 / 监听端
+```
+
+另请注意：`scripts/setup_radio.sh` 会用仓库里的 `config/keys/` 覆盖 `/etc/*.key`。
+因此请先把正确的一对密钥放进每台主机的 `<repo>/config/keys/` 再运行它，或者在
+运行之后再手工把密钥复制到 `/etc`。
 
 如果报错 `error: wfb_keygen not found, install wfb-ng first`，说明第 1 步尚未
 完成，或只安装了无线驱动。可以先执行第 1 步；若暂时不需要驱动，也可以只
@@ -179,7 +213,8 @@ sudo env VERSION="$(make -s version | sed -n 's/^VERSION=//p')" \
     COMMIT="$(git rev-parse HEAD)" python3 setup.py install
 ```
 
-安装后确认命令可用，再重新生成密钥：
+安装后确认命令可用；只有从未生成过密钥时才执行生成命令（同样不要在各主机
+分别生成）：
 
 ```bash
 command -v wfb_keygen wfb_tx wfb_rx wfb-server wfb-cli
@@ -190,7 +225,8 @@ scripts/gen_keys.sh config/keys
 > 安装脚本并没有安装 catch2。本仓库的 `scripts/install_wfbng.sh` 已改为
 > `make all_bin wfb_rtsp`。
 >
-> 重新生成密钥会覆盖 `config/keys` 中的旧密钥，如需保留请先备份：
+> 重新生成密钥会覆盖 `config/keys` 中的旧密钥，并且**必须**把新密钥重新分发到
+> 所有节点，否则各端密钥不再配对。如需保留旧密钥请先备份：
 > `cp -a config/keys config/keys.bak-$(date +%Y%m%d-%H%M%S)`。
 
 ### 3. 配置各主机

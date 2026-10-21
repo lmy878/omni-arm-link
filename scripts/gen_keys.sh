@@ -14,6 +14,12 @@
 #   gs.key     -> controller    (and the monitor host)
 #
 # The passive monitor needs BOTH keys to decode downlink and uplink traffic.
+#
+# IMPORTANT: drone.key and gs.key are one matched pair. Generate them ONCE on a
+# single host and distribute the same files everywhere. Running this script on
+# each host generates a new random pair each time, so the nodes will not be able
+# to decrypt each other. If separate generation is unavoidable, pass the same
+# password on every host.
 
 set -euo pipefail
 
@@ -35,3 +41,9 @@ fi
 
 chmod 600 "${OUT_DIR}"/drone.key "${OUT_DIR}"/gs.key
 echo "keypair written to ${OUT_DIR} (drone.key, gs.key)"
+if command -v sha256sum >/dev/null 2>&1; then
+    echo "fingerprints (must match on every host):"
+    sha256sum "${OUT_DIR}"/drone.key "${OUT_DIR}"/gs.key
+fi
+echo "deploy the SAME drone.key to the robot and the SAME gs.key to the controller."
+echo "do not run this script separately on each host: random keys will not match."
