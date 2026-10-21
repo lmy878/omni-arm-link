@@ -65,7 +65,10 @@ if ! ip link show "${wlan}" >/dev/null 2>&1; then
     echo "error: interface ${wlan} not found" >&2
     exit 1
 fi
-driver="$(ethtool -i "${wlan}" 2>/dev/null | awk -F': ' '/driver:/{print $2}')"
+driver=""
+if command -v ethtool >/dev/null 2>&1; then
+    driver="$(ethtool -i "${wlan}" 2>/dev/null | awk -F': ' '/driver:/{print $2}' || true)"
+fi
 echo "    driver: ${driver:-unknown}"
 case "${driver}" in
     rtl88xxau_wfb|rtl8812eu|ath9k) ;;

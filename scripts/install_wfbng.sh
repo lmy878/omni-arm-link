@@ -40,6 +40,10 @@ else
         git clone -b v5.15.0.1 https://github.com/svpcom/rtl8812eu.git
     fi
     cd rtl8812eu
+    # DKMS reports the kernel arch as aarch64, but the kernel tree uses arm64.
+    if [[ "$(uname -m)" == "aarch64" ]]; then
+        sed -i 's|KSRC=/lib/modules/${kernelver}/build"|KSRC=/lib/modules/${kernelver}/build ARCH=arm64"|' dkms.conf
+    fi
     ./dkms-install.sh
 fi
 
@@ -49,8 +53,22 @@ if [[ ! -d /opt/wfb-ng ]]; then
 fi
 cd /opt/wfb-ng
 git pull --ff-only || true
-make -j"$(nproc)"
-make install
+# Build only the runtime binaries; the default target also builds the test
+# suite, which needs catch2 and is not installed by this script.
+make -j"$(nproc)" all_bin wfb_rtsp
+
+echo "==> installing wfb-ng binaries and python package"
+# wfb-ng has no 'make install' target; setup.py installs wfb_keygen/wfb_rx/
+# wfb_tx into /usr/bin and wfb-server/wfb-cli into /usr/local/bin.
+VERSION="$(make -s version | sed -n 's/^VERSION=//p')" \
+COMMIT="$(git rev-parse HEAD)" \
+    python3 setup.py install
+
+hash -r
+if ! command -v wfb_keygen >/dev/null 2>&1; then
+    echo "error: wfb_keygen still not in PATH after install" >&2
+    exit 1
+fi
 
 echo "==> done"
 echo "Verify the driver with: ethtool -i <wlan>"

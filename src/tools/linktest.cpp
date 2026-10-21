@@ -3,6 +3,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,7 @@ struct Options {
     double duration_s = 0.0;
     double stats_interval_s = 1.0;
     std::string report_path;
+    bool random_payload = false;
     bool self_test = false;
 };
 
@@ -55,6 +57,7 @@ void print_usage() {
         "  --rx-bind ADDR           bind address for rx socket (role default: 127.0.0.2)\n"
         "  --rate HZ                probe rate (default 200)\n"
         "  --size BYTES             probe payload size, padded (default 1)\n"
+        "  --random                 fill probe payload with random bytes\n"
         "  --duration SEC           stop after SEC seconds, 0 = forever\n"
         "  --stats-interval SEC     reporting interval (default 1)\n"
         "  --report PATH            write a final machine-readable report to PATH\n"
@@ -95,6 +98,7 @@ bool load_options(Config& cfg, Options& opt) {
     opt.stats_interval_s = cfg.get_double("stats_interval", opt.stats_interval_s);
     opt.report_path = cfg.get_string("report", opt.report_path);
     opt.rx_bind = cfg.get_string("rx_bind", opt.rx_bind);
+    opt.random_payload = cfg.get_bool("random", opt.random_payload);
     opt.self_test = cfg.get_bool("self_test", opt.self_test);
     opt.rx_port = static_cast<std::uint16_t>(cfg.get_int("rx_port", opt.rx_port));
     opt.payload_size = static_cast<std::size_t>(cfg.get_int("size", 1));
@@ -146,6 +150,7 @@ bool write_report(const std::string& path, const Options& options, double durati
     out << "rtt_jitter_ms=" << rx.latency.jitter_s * 1e3 << '\n';
     out << "rate_hz=" << options.rate << '\n';
     out << "size_bytes=" << options.payload_size << '\n';
+    out << "random_payload=" << (options.random_payload ? 1 : 0) << '\n';
     out << "scheduler_missed=" << scheduler_missed << '\n';
     return static_cast<bool>(out);
 }
@@ -317,6 +322,16 @@ int main(int argc, char** argv) {
     std::vector<std::uint8_t> pong(options.payload_size, 0);
     pong[0] = kPong;
 
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> random_byte(0, 255);
+    auto fill_random = [&rng, &random_byte](std::vector<std::uint8_t>& payload,
+                                            std::uint8_t marker) {
+        for (std::size_t i = 1; i < payload.size(); ++i) {
+            payload[i] = static_cast<std::uint8_t>(random_byte(rng));
+        }
+        payload[0] = marker;
+    };
+
     RateScheduler scheduler(options.rate);
     const std::uint64_t start_ns = now_ns();
     std::uint64_t last_stats_ns = start_ns;
@@ -348,6 +363,9 @@ int main(int argc, char** argv) {
                 request_window.on_rx(frame.header.seq, frame.size());
                 request_total.on_rx(frame.header.seq, frame.size());
                 std::vector<std::uint8_t> echo = pong;
+                if (options.random_payload) {
+                    fill_random(echo, kPong);
+                }
                 if (tx.send(options.tx_stream, kFlagNone, frame.header.seq,
                             frame.header.timestamp_ns, echo)) {
                     tx_stats.on_tx(echo.size() + kHeaderSize);
@@ -367,6 +385,9 @@ int main(int argc, char** argv) {
         }
 
         if (initiator) {
+            if (options.random_payload) {
+                fill_random(ping, kPing);
+            }
             if (tx.send(options.tx_stream, kFlagNone, seq++, epoch_ns(), ping)) {
                 tx_stats.on_tx(ping.size() + kHeaderSize);
                 ++sent_pings;

@@ -157,13 +157,41 @@ sudo scripts/install_wfbng.sh 8812eu
 ```
 
 ### 2. 生成密钥对
-[text](通信方案.md)
+
+详见 [通信方案](通信方案.md)。
+
 ```bash
 scripts/gen_keys.sh config/keys
 ```
 
 将 `drone.key` 复制到机器人端，`gs.key` 复制到遥控器端，并将**两个密钥**都
 复制到被动监听端（它需要解码上下行两个方向）。
+
+如果报错 `error: wfb_keygen not found, install wfb-ng first`，说明第 1 步尚未
+完成，或只安装了无线驱动。可以先执行第 1 步；若暂时不需要驱动，也可以只
+构建并安装 WFB-NG 用户态工具：
+
+```bash
+git clone --depth 1 https://github.com/svpcom/wfb-ng.git ~/wfb-ng
+make -C ~/wfb-ng -j"$(nproc)" all_bin wfb_rtsp
+cd ~/wfb-ng
+sudo env VERSION="$(make -s version | sed -n 's/^VERSION=//p')" \
+    COMMIT="$(git rev-parse HEAD)" python3 setup.py install
+```
+
+安装后确认命令可用，再重新生成密钥：
+
+```bash
+command -v wfb_keygen wfb_tx wfb_rx wfb-server wfb-cli
+scripts/gen_keys.sh config/keys
+```
+
+> 不要直接执行 `make`：WFB-NG 的默认目标还会构建依赖 catch2 的测试程序，而
+> 安装脚本并没有安装 catch2。本仓库的 `scripts/install_wfbng.sh` 已改为
+> `make all_bin wfb_rtsp`。
+>
+> 重新生成密钥会覆盖 `config/keys` 中的旧密钥，如需保留请先备份：
+> `cp -a config/keys config/keys.bak-$(date +%Y%m%d-%H%M%S)`。
 
 ### 3. 配置各主机
 
@@ -199,12 +227,78 @@ sudo systemctl enable --now oal-robot
 ```
 
 WFB-NG 的链路统计可独立于本项目获取：
-sudo scripts/install_wfbng.sh 8812eu
+
 ```bash
 wfb-cli robot      # 或 controller / monitor
 ```
 
-### 5. 单机双电台自测（机器人 + 遥控器同机）
+#### 随机数据链路测试（可选）
+
+不启动完整应用时，也可以用 `oal_linktest` 通过 WFB-NG 测试流发送随机生成的
+负载，验证空口收发。`--random` 会把每个探测包负载填充为随机字节（首字节保留
+ping/pong 标记），延迟、丢包与 FEC 统计和普通测试完全一致：
+
+```bash
+# 机器人端（应答方）
+scripts/link_test.sh robot --random --size 340
+
+# 遥控器端（发起方，30 秒后自动退出）
+scripts/link_test.sh controller --random --size 340 --duration 30
+
+# 测试结束后生成汇总报告
+scripts/link_test.sh report
+```
+
+两台主机各用一块网卡时，可让双机测试脚本在两端都启用随机负载：
+
+```bash
+scripts/link_test_2host.sh run \
+    --robot pi@robot.local --controller pi@controller.local \
+    --robot-arg --random --controller-arg --random
+```
+
+### 5. 两台主机各一块网卡链路测试（虚拟数据）
+
+前置条件：两台主机都已按第 1–3 步安装 WFB-NG、复制密钥，并分别用各自的网卡
+启动了对应 profile（机器人端 `wfb-server robot <wlan>`，遥控器端
+`wfb-server controller <wlan>`）。两块网卡必须使用相同的 `wifi_channel` 与
+`link_domain`。两台主机之间需配置免密 SSH，且仓库已在两端构建完成。
+
+`scripts/link_test_2host.sh` 会通过 WFB-NG 的测试流（0xFE/0x7E）发送合成
+ping/pong 数据（默认 340 B），不依赖真实传感器或摇杆。在任意一台主机上执行
+下面这一条命令，即可自动启动两端测试、取回两份报告并生成汇总：
+
+```bash
+scripts/link_test_2host.sh run \
+    --robot pi@robot.local --controller pi@controller.local \
+    --duration 30 --rate 200 --size 340
+```
+
+- `--robot` / `--controller`：两端的 SSH 目标；本机可写 `local`。
+- `--robot-repo` / `--controller-repo`：两端仓库路径，默认与当前仓库相同。
+- `--dir`：汇总报告目录，默认 `/tmp/oal-linktest-2host`。
+- `--remote-dir`：两端报告临时目录，默认 `/tmp/oal-linktest`。
+- `--robot-arg` / `--controller-arg`：透传给 `oal_linktest` 的额外参数（可重复）。
+
+如果已手工在两台主机上分别运行了 `scripts/link_test.sh robot` 和
+`scripts/link_test.sh controller`，测试结束后只需执行下面这一条命令，即可
+通过 SSH 取回两份报告并生成汇总：
+
+```bash
+scripts/link_test_2host.sh report \
+    --robot pi@robot.local --controller pi@controller.local
+```
+
+报告包含上下行 TX/RX、丢包/重复/乱序、往返延迟 p50/p95/p99/max、FEC 恢复率
+（两端 `wfb-server` 的 `api_port` 可访问时）以及 PASS/FAIL 判定，并同时保存为
+`<dir>/report.txt`。阈值沿用 `OAL_LINK_MAX_LOSS_PCT`（默认 5）和
+`OAL_LINK_MAX_P99_MS`（默认 100）；设置 `OAL_LINK_MIN_FEC_RECOVERY_PCT` 可将
+最低 FEC 恢复率纳入判定。SSH 参数可通过 `OAL_SSH_OPTS` 覆盖。
+
+> 两台主机必须实际启动 `wfb-server`。否则测试数据不会进入 WFB-NG，报告通常
+> 会显示 `FAIL no-traffic`，FEC 数据也不可用。
+
+### 6. 单机双电台自测（机器人 + 遥控器同机）
 
 只需一台主机、两块支持 Monitor Mode + 注入的无线网卡（例如两块 RTL8812EU），
 即可在一台机器上同时充当机器人端与遥控器端，跑通完整的 WFB-NG 空口链路。
@@ -408,6 +502,28 @@ scripts/link_test.sh report
 可关闭）、`OAL_WFB_API_HOST`、`OAL_WFB_TEST_SERVICE` 覆盖。设置
 `OAL_LINK_MIN_FEC_RECOVERY_PCT` 可把最低恢复率纳入 PASS/FAIL 判定。
 
+### `link_test_2host.sh`
+
+```bash
+# 两台主机各一块网卡：启动测试并自动生成汇总报告
+scripts/link_test_2host.sh run --robot pi@robot.local --controller pi@controller.local
+
+# 已手工跑完测试：只取回两端报告并生成汇总
+scripts/link_test_2host.sh report --robot pi@robot.local --controller pi@controller.local
+
+# 两端都通过 SSH 访问，仓库不在默认路径，并调整测试参数
+scripts/link_test_2host.sh run \
+    --robot root@robot --controller root@controller \
+    --robot-repo /opt/omni-arm-link --controller-repo /opt/omni-arm-link \
+    --duration 60 --rate 200 --size 340 --dir ./linktest-report
+```
+
+`run` 会先启动机器人端应答方（多运行 5 s），再启动遥控器端发起方；结束后通过
+SSH 取回 `<remote-dir>/<role>.report` 及 FEC 采样文件，调用
+`scripts/link_report.sh` 输出汇总并保存到 `<dir>/report.txt`。`report` 模式
+只执行取回与汇总，不再启动测试。两端均需已启动 `wfb-server`，否则数据不会
+经过 WFB-NG，报告会缺少 FEC 数据，并可能判定为 `FAIL no-traffic`。
+
 ### `oal_sim`
 
 ```bash
@@ -441,8 +557,8 @@ oal_sim controller --dest HOST:PORT --rate 200 --estop
 
 | 通信方案测试 | 运行方式 |
 |---|---|
-| 1. 基础双向通信 | `scripts/link_test.sh robot` / `... controller`，结束后 `scripts/link_test.sh report`，再运行 `oal_robot` + `oal_controller` |
-| 2. 延迟测试 | `scripts/link_test.sh report` 中的 p95/p99/max + `oal_monitor --measure-latency`（时钟已同步） |
+| 1. 基础双向通信 | 双机：`scripts/link_test_2host.sh run --robot ... --controller ...`；单机：`scripts/link_test.sh robot` / `... controller`，结束后 `scripts/link_test.sh report`，再运行 `oal_robot` + `oal_controller` |
+| 2. 延迟测试 | 汇总报告中的 p95/p99/max + `oal_monitor --measure-latency`（时钟已同步） |
 | 3. 丢包 / 干扰测试 | `oal_sim ... --loss --duplicate --reorder --jitter-ms`，然后引入真实干扰；观察 PER、序列丢包、`oal_linktest` 的 FEC 恢复率与 `wfb-cli` 的实时统计 |
 | 4. 第三节点监听 | 运行 `oal_monitor`；验证 `bidirectional=yes`、对主链路无影响，并获得完整 JSONL 日志 |
 | 5. 比赛环境模拟 | 在密集 Wi-Fi、机器人运动、人体/金属遮挡及电机运行条件下重复测试 1–4 |
