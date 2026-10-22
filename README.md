@@ -152,9 +152,55 @@ ctest --test-dir build --output-on-failure
 
 ### 1. 安装驱动 + WFB-NG（每台主机一次）
 
+每台主机都需要联网（能访问 apt 源和 GitHub），并执行一次：
+
 ```bash
-sudo scripts/install_wfbng.sh 8812eu
+sudo scripts/install_wfbng.sh 8812eu   # 网卡为 RTL8812AU 时改用 8812au
 ```
+
+脚本会自动完成：
+
+1. 用 `apt-get` 安装编译依赖（`git`、`build-essential`、`libpcap`、`libsodium`、
+   `libevent`、Python 等）；
+2. 从 GitHub 克隆并 DKMS 安装补丁版驱动：RTL8812EU 来自
+   `https://github.com/svpcom/rtl8812eu.git`（分支 `v5.15.0.1`），RTL8812AU 来自
+   `https://github.com/svpcom/rtl8812au.git`（分支 `v5.2.20`）；
+3. 从 `https://github.com/svpcom/wfb-ng.git` 克隆 WFB-NG 到 `/opt/wfb-ng`；
+4. 构建 `all_bin wfb_rtsp` 并用 `setup.py` 安装 `wfb_tx` / `wfb_rx` /
+   `wfb_keygen` / `wfb-server` / `wfb-cli`。
+
+安装完成后确认驱动和命令：
+
+```bash
+ethtool -i <wlan>        # driver 应为 rtl8812eu 或 rtl88xxau_wfb
+command -v wfb_keygen wfb_tx wfb_rx wfb-server wfb-cli
+```
+
+**手动安装 WFB-NG**（脚本失败、只需用户态工具，或想使用较新的 `master` 时）：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git build-essential libpcap-dev libsodium-dev \
+    libevent-dev python3 python3-pip python3-all python3-all-dev python3-setuptools
+
+git clone https://github.com/svpcom/wfb-ng.git ~/wfb-ng
+cd ~/wfb-ng
+make -j"$(nproc)" all_bin wfb_rtsp
+sudo env VERSION="$(make -s version | sed -n 's/^VERSION=//p')" \
+    COMMIT="$(git rev-parse HEAD)" python3 setup.py install
+
+command -v wfb_keygen wfb_tx wfb_rx wfb-server wfb-cli
+```
+
+> 不要直接执行裸 `make`：WFB-NG 的默认目标还会构建依赖 catch2 的测试程序，而
+> 安装脚本没有安装 catch2，会因此失败。请使用 `make all_bin wfb_rtsp`。
+>
+> 如果 `wfb-server` 安装在 `~/.local/bin`（例如用 `pip --user` 安装），本仓库的
+> `scripts/wfb_server.sh` 会自动补上用户级路径；直接用 `sudo wfb-server` 可能
+> 因 root 的 `PATH` / `PYTHONPATH` 不同而报 `command not found`。
+
+驱动也可以单独安装（例如已有 WFB-NG，只需重装驱动）：按上面的仓库地址克隆后，
+在对应目录执行 `sudo ./dkms-install.sh`。
 
 ### 2. 生成密钥对（只生成一次）
 
@@ -188,13 +234,14 @@ scripts/gen_keys.sh config/keys
 > 如果确实需要在多台主机上各自生成（例如批量部署），每次调用都传入**同一个
 > 密码**：`scripts/gen_keys.sh config/keys 'shared-password'`。`wfb_keygen` 会用
 > 固定 salt 从密码派生出相同的密钥对。
+>
+> 已经遇到该问题（`d_err` 增长、应用收不到数据）时，排查和修复步骤见
+> [故障排查](#故障排查)。
 
-分发后在各主机核对每个已安装文件的指纹，确认与生成主机上记录的一致（机器人端
-核对 `drone.key`，遥控器端核对 `gs.key`，监听端两个都核对）：
+分发后在各主机核对指纹，确认与生成主机上记录的一致：
 
 ```bash
-sha256sum /etc/drone.key    # 机器人端 / 监听端
-sha256sum /etc/gs.key       # 遥控器端 / 监听端
+
 ```
 
 另请注意：`scripts/setup_radio.sh` 会用仓库里的 `config/keys/` 覆盖 `/etc/*.key`。
@@ -202,16 +249,8 @@ sha256sum /etc/gs.key       # 遥控器端 / 监听端
 运行之后再手工把密钥复制到 `/etc`。
 
 如果报错 `error: wfb_keygen not found, install wfb-ng first`，说明第 1 步尚未
-完成，或只安装了无线驱动。可以先执行第 1 步；若暂时不需要驱动，也可以只
-构建并安装 WFB-NG 用户态工具：
-
-```bash
-git clone --depth 1 https://github.com/svpcom/wfb-ng.git ~/wfb-ng
-make -C ~/wfb-ng -j"$(nproc)" all_bin wfb_rtsp
-cd ~/wfb-ng
-sudo env VERSION="$(make -s version | sed -n 's/^VERSION=//p')" \
-    COMMIT="$(git rev-parse HEAD)" python3 setup.py install
-```
+完成，或只安装了无线驱动。请执行第 1 步；若暂时不需要驱动，可按其中的
+“手动安装 WFB-NG”只构建并安装用户态工具。
 
 安装后确认命令可用；只有从未生成过密钥时才执行生成命令（同样不要在各主机
 分别生成）：
@@ -236,15 +275,82 @@ scripts/gen_keys.sh config/keys
 sudo scripts/setup_radio.sh robot wlx140a022213ac --start
 
 # 在遥控器端
-sudo scripts/setup_radio.sh controller wlx140a022213ac --start
+sudo scripts/setup_radio.sh controller wlx140a022213a5 --start
 
-# 在监听端（只收，发射功率关闭）
+# 在监听端（只收）
 sudo scripts/setup_radio.sh monitor wlx140a022213ac --start
 ```
 
 该脚本会安装 `/etc/wifibroadcast.cfg`、复制密钥、校验驱动并启动 WFB-NG
 配置。三台主机必须使用相同的 `wifi_channel` 与 `link_domain`
 （参见 `config/wifibroadcast-*.cfg`）。
+
+#### 省电模式导致丢包率升高
+
+**现象：** 打开系统 / 网卡的“节能模式”后，链路仍能连通，但 `oal_monitor`、
+`oal_linktest`、`wfb-cli` 或 `scripts/link_report.sh` 报告的丢包率和延迟明显上升，
+且通常伴随阵发性（突发）丢包。
+
+**原因：** WFB-NG 在 Monitor Mode 下直接注入原始 802.11 帧。网卡或系统一旦进入
+省电 / 节能模式，射频会在 DTIM 间隔休眠，帧被缓存到下一个唤醒周期或被直接丢弃。
+另外 RTL8812AU/EU 是 USB 网卡，USB 自动挂起、CPU 降频或 TLP / power-profiles-daemon
+等电源管理策略也会让网卡在空闲时休眠，造成注入突发丢失。
+
+> 本项目代码不控制省电：应用层只是**观测**到丢包。丢包由序列号缺口统计得出，
+> 见 `src/stats.cpp:39` 与 `src/stats.cpp:54-56`，因此应用层无法“修复”它，只能
+> 在系统 / 驱动层关闭省电。
+
+按下面顺序排查并尝试解决：
+
+1. **确认并关闭 802.11 省电。** `get power_save` 应为 `off`：
+
+   ```bash
+   iw dev <wlan> get power_save
+   sudo iw dev <wlan> set power_save off
+   ```
+
+2. **让 NetworkManager 不再重新打开省电。** 在
+   `/etc/NetworkManager/NetworkManager.conf` 中加入，然后重启服务：
+
+   ```ini
+   [connection]
+   wifi.powersave=2
+   ```
+
+   ```bash
+   sudo systemctl restart NetworkManager
+   ```
+
+3. **禁用 USB 自动挂起（仅 USB 网卡，如 RTL8812AU/EU）。** 把 `<bus>-<port>`
+   换成 `lsusb -t` 中对应网卡的端口：
+
+   ```bash
+   echo on | sudo tee /sys/bus/usb/devices/<bus>-<port>/power/control
+   ```
+
+   用 udev 规则持久化（Realtek 网卡 vendor id 为 `0bda`）：
+
+   ```ini
+   # /etc/udev/rules.d/50-wifi-no-autosuspend.rules
+   ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{power/control}="on"
+   ```
+
+   也可以在内核启动参数中全局关闭：`usbcore.autosuspend=-1`。
+
+4. **检查驱动是否编译了省电支持。** 本仓库附带的驱动默认已关闭
+   （`rtl8812au/Makefile:59` 的 `CONFIG_POWER_SAVING = n`）；若换用发行版自带驱动，
+   请确认其没有启用 `CONFIG_POWER_SAVING`。
+
+5. **避免其它电源管理策略再次降频 / 休眠。** 测试时关闭 TLP、
+   `power-profiles-daemon` 或桌面环境的“节能 / 省电”开关，并把 CPU governor 设为
+   `performance`，确认结果稳定后再逐项恢复。
+
+6. **验证效果。** 重复运行 `scripts/link_test_2host.sh` 或
+   `scripts/link_report.sh`，确认丢包率与 p99 延迟恢复到阈值以内；也可用
+   `wfb-cli <role>` 观察射频层统计。
+
+> 当前 `scripts/setup_radio.sh` 不会自动关闭省电；部署时请手动执行上述命令，或
+> 将它们加入启动脚本。监听端同样需要关闭省电，否则也会出现“看起来丢包”的现象。
 
 ### 4. 运行应用程序
 
@@ -299,6 +405,41 @@ scripts/link_test_2host.sh run \
 启动了对应 profile（机器人端 `wfb-server robot <wlan>`，遥控器端
 `wfb-server controller <wlan>`）。两块网卡必须使用相同的 `wifi_channel` 与
 `link_domain`。两台主机之间需配置免密 SSH，且仓库已在两端构建完成。
+
+#### 连接另一台主机（免密 SSH）
+
+双机测试脚本会用 SSH 在两端执行命令并取回报告，因此执行脚本的主机必须能免密
+登录另一端。先确认连通性（以下示例在遥控器端操作，目标是机器人端）：
+
+```bash
+ssh pi@robot.local 'hostname; uname -m'
+```
+
+如果需要输入密码，生成密钥并复制到对端（每台主机只需一次）：
+
+```bash
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519   # 已有密钥可跳过
+ssh-copy-id pi@robot.local
+ssh pi@robot.local 'echo ok'
+```
+
+只要求“运行 `link_test_2host.sh` 的那一端”能登录另一端；若其中一端就是本机，
+把对应的 `--robot` / `--controller` 写成 `local` 即可，无需为它配置 SSH。注意
+SSH 只用于测试编排，实际控制 / 遥测数据走 WFB-NG 空口，不要求两台主机处于同一
+IP 网络。主机名或 IP 换成实际地址；非默认端口用 `--ssh-port`，其它 SSH 选项通过
+`OAL_SSH_OPTS` 传入：
+
+```bash
+OAL_SSH_OPTS="-o StrictHostKeyChecking=accept-new" \
+scripts/link_test_2host.sh run \
+    --robot pi@192.168.1.20 --controller pi@192.168.1.10 \
+    --duration 30 --rate 200 --size 340
+```
+
+若两端仓库路径不同，加 `--robot-repo` / `--controller-repo`。脚本启动前会检查
+对端是否存在 `<repo>/build/oal_linktest` 和 `<repo>/scripts/link_test.sh`，因此
+两端都要先按[构建](#构建)完成编译。手工联调时也可以直接 `ssh <host>` 登录到
+另一台终端，分别在两端运行 `scripts/run_robot.sh` / `scripts/run_controller.sh`。
 
 `scripts/link_test_2host.sh` 会通过 WFB-NG 的测试流（0xFE/0x7E）发送合成
 ping/pong 数据（默认 340 B），不依赖真实传感器或摇杆。在任意一台主机上执行
@@ -586,6 +727,145 @@ oal_sim controller --dest HOST:PORT --rate 200 --estop
 **时钟同步：** 跨节点的单向延迟只有在两台主机时钟同步（例如通过 chrony/PTP）
 时才有意义。若未同步，请使用 `--no-measure-latency`，并依赖 `oal_linktest`
 的往返测量。
+
+---
+
+## 故障排查
+
+遇到“两端进程都在跑，但互相收不到数据”时，先按下面顺序自查：
+
+1. `iw dev <wlan> info` 显示 `type monitor`，且信道与 `wifi_channel` 一致；
+2. `wfb-cli <role>` 的 `tx` / `rx` 在增长，且 `d_err`（解密错误）基本不增长；
+3. 两端的 `/etc/drone.key`、`/etc/gs.key` 指纹一致（见下文）；
+4. `ss -ltnup | grep -E '56[0-9][0-9]'` 能看到本端 `wfb_tx` / `wfb_rx`；
+5. 应用配置的端口与 WFB-NG profile 中的 `peer` 端口一致。
+
+### 症状：能启动但完全收不到数据，`d_err` 持续增长（密钥不匹配）
+
+**现象：** 两个 `wfb-server` 都能启动，`wfb-cli <role>` 里 `rx` / `recv` 有增长，
+但 `d_err`（decryption error）一直涨，应用层却什么都收不到；`wfb_rx` 日志里可能
+出现 `Unable to decrypt session key` 或 `Unable to decrypt packet`。
+
+**原因：** WFB-NG 的 `drone.key` 与 `gs.key` 必须来自**同一次** `wfb_keygen`。
+每个文件都包含“自己的私钥 + 对端公钥”：机器人/监听端用 `drone.key`，遥控器/
+监听端用 `gs.key`。如果三端各自运行过 `gen_keys.sh`，或者 `setup_radio.sh` 用
+仓库里另一对 `config/keys` 覆盖了 `/etc/*.key`，两端密钥就不配对——空口帧能收到，
+但解不开，所以射频统计里 `rx` 在涨、`d_err` 也在涨，应用层没有任何数据。
+
+**排查：** 在所有节点核对指纹。`drone.key` 在机器人端和监听端必须一致，`gs.key`
+在遥控器端和监听端必须一致；**不要拿 `drone.key` 和 `gs.key` 互相比**，它们本来
+就不同：
+
+```bash
+sha256sum /etc/drone.key /etc/gs.key
+```
+
+**修复：**
+
+1. 只在**一台**主机上重新生成一次（会覆盖旧密钥）：
+
+   ```bash
+   scripts/gen_keys.sh config/keys
+   sha256sum config/keys/drone.key config/keys/gs.key
+   ```
+
+2. 把**同一对**密钥分发到三端（机器人端只需 `drone.key`，遥控器端只需
+   `gs.key`，监听端两个都要）。例如：
+
+   ```bash
+   scp config/keys/drone.key pi@robot.local:/tmp/drone.key
+   ssh pi@robot.local 'sudo install -m600 /tmp/drone.key /etc/drone.key'
+
+   scp config/keys/gs.key pi@controller.local:/tmp/gs.key
+   ssh pi@controller.local 'sudo install -m600 /tmp/gs.key /etc/gs.key'
+   ```
+
+   也可以在每台主机运行 `setup_radio.sh` 前，先把正确的一对密钥放进该主机的
+   `<repo>/config/keys/`，脚本会自动安装。
+
+3. **重启所有节点的 `wfb-server`**，旧进程仍持有旧密钥：
+
+   ```bash
+   sudo systemctl restart 'wifibroadcast@*'
+   # 或重新执行 sudo scripts/setup_radio.sh <role> <wlan> --start
+   ```
+
+4. 再次运行 `wfb-cli <role>`，确认 `rx` 增长而 `d_err` 不再增长，然后观察
+   `oal_monitor` / `oal_linktest` 是否恢复。
+
+> 还需确认 profile 没有改错：机器人端的 `drone_base` 使用 `drone.key`，遥控器端
+> 的 `gs_base` 使用 `gs.key`（见 `config/wifibroadcast-*.cfg`）。修改密钥后不要
+> 只重启一端，否则仍未配对。
+
+### 症状：`iw dev <wlan> info` 显示 `type managed`（WFB-NG 没有接管网卡）
+
+**现象：** `iw dev <wlan> info` 显示 `type managed`，网卡可能还带着 IP 或连着
+某个 SSID；WFB-NG 无法注入帧，两端自然不通。
+
+**原因：** Monitor Mode 是 `wfb-server` 启动时自动设置的：它先检查
+`iw dev <wlan> info`，如果不是 `type monitor`，就执行
+`ip link set <wlan> down` → `iw dev <wlan> set monitor otherbss` →
+`ip link set <wlan> up`。而 `scripts/setup_radio.sh` 本身只做 `ip link set up`、
+MTU 和 `txqueuelen`，**不负责设置 monitor 模式**。因此以下情况网卡会停留在
+managed：
+
+- `setup_radio.sh` 没有带 `--start`，或 `wfb-server` 启动后立即失败；
+- 启动时传错网卡名或 profile；
+- `wfb-server` 因权限、驱动、密钥或信道不支持等原因启动失败；
+- NetworkManager / wpa_supplicant 重新接管网卡，或主机重启后没有重新启动 WFB；
+- 这块网卡同时被当作上网口/uplink 使用。
+
+**排查：**
+
+```bash
+iw dev <wlan> info                 # 应为 type monitor，channel 与配置一致
+ip -br addr show <wlan>            # 不应有 IP 地址
+sudo systemctl status 'wifibroadcast@*' --no-pager
+journalctl -u 'wifibroadcast@*' -n 50 --no-pager
+wfb-cli <role>                     # tx/rx 是否增长，d_err 是否增长
+```
+
+如果 `wfb-server` 在运行但仍是 managed，查看它的日志中是否有 `iw` / `ip` 报错。
+
+**修复：** 先停掉占用网卡的进程，再用正确参数启动，让 WFB-NG 自己设置 monitor：
+
+```bash
+sudo scripts/setup_radio.sh robot <wlan> --start
+# 或直接：sudo scripts/wfb_server.sh robot <wlan>
+```
+
+确认结果：
+
+```bash
+iw dev <wlan> info | grep -E 'type|channel'
+# 期望：type monitor，channel 165 (5180 MHz)
+```
+
+仅用于临时验证时，也可以手动设置（长期仍应由 `wfb-server` 管理）：
+
+```bash
+sudo ip link set <wlan> down
+sudo iw dev <wlan> set monitor otherbss
+sudo ip link set <wlan> up
+sudo iw dev <wlan> set channel 165 HT20
+```
+
+若 NetworkManager 反复接管，除了 WFB-NG 配置里的 `set_nm_unmanaged = True`
+（它会执行 `nmcli device set <wlan> managed no`），还可以在
+`/etc/NetworkManager/NetworkManager.conf` 中固定排除该网卡：
+
+```ini
+[keyfile]
+unmanaged-devices=interface-name:<wlan>
+```
+
+然后 `sudo systemctl restart NetworkManager`。建议 WFB 使用**专用网卡**，不要和
+上网/uplink 共用；主机重启后要重新启动 `wfb-server`（或启用 `wifibroadcast@`
+服务）。
+
+> 密钥不匹配和 managed 模式可能同时出现。建议先让网卡进入 monitor 模式、确认
+> `wfb-server` 正常运行，再核对密钥与 `d_err`，最后检查两端的 `wifi_channel`
+> 和 `link_domain` 是否一致。
 
 ---
 
